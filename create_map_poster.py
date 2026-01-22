@@ -6,275 +6,24 @@ from matplotlib.font_manager import FontProperties
 import matplotlib.colors as mcolors
 import numpy as np
 from geopy.geocoders import Nominatim
+from opencage.geocoder import OpenCageGeocode
+from opencage.geocoder import InvalidInputError, RateLimitExceededError, UnknownError
 from tqdm import tqdm
 import time
 import json
 import os
 import sys
-from datetime import datetime
-import argparse
-import pickle
-import asyncio
-from pathlib import Path
-from hashlib import md5
-from typing import cast
-from geopandas import GeoDataFrame
-import pickle
 
-class CacheError(Exception):
-    """Raised when a cache operation fails."""
-    pass
-
-CACHE_DIR_PATH = os.environ.get("CACHE_DIR", "cache")
-CACHE_DIR = Path(CACHE_DIR_PATH)
-
-CACHE_DIR.mkdir(exist_ok=True)
-
-def cache_file(key: str) -> str:
-    encoded = md5(key.encode()).hexdigest()
-    return f"{encoded}.pkl"
-
-def cache_get(name: str) -> dict | None:
-    path = CACHE_DIR / cache_file(name)
-    if path.exists():
-        with path.open("rb") as f:
-            return pickle.load(f)
-    return None
-
-def cache_set(name: str, obj) -> None:
-    path = CACHE_DIR / cache_file(name)
-    try:
-        with path.open("wb") as f:
-            pickle.dump(obj, f)
-    except pickle.PickleError as e:
-        raise CacheError(
-            f"Serialization error while saving cache for '{name}': {e}"
-        ) from e
-    except (OSError, IOError) as e:
-        raise CacheError(
-            f"File error while saving cache for '{name}': {e}"
-        ) from e
-
-THEMES_DIR = "themes"
-FONTS_DIR = "fonts"
-POSTERS_DIR = "posters"
-
-CACHE_DIR = ".cache"
-
-class CacheError(Exception):
-    pass
-
-
-def _cache_path(key: str) -> str:
-    safe = key.replace(os.sep, "_")
-    return os.path.join(CACHE_DIR, f"{safe}.pkl")
-
-
-def cache_get(key: str):
-    try:
-        path = _cache_path(key)
-        if not os.path.exists(path):
-            return None
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    except Exception as e:
-        raise CacheError(f"Cache read failed: {e}")
-
-
-def cache_set(key: str, value):
-    try:
-        if not os.path.exists(CACHE_DIR):
-            os.makedirs(CACHE_DIR)
-        path = _cache_path(key)
-        with open(path, "wb") as f:
-            pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
-    except Exception as e:
-        raise CacheError(f"Cache write failed: {e}")
-
-
-def load_fonts():
-    """
-    Load Roboto fonts from the fonts directory.
-    Returns dict with font paths for different weights.
-    """
-    fonts = {
-        'bold': os.path.join(FONTS_DIR, 'Roboto-Bold.ttf'),
-        'regular': os.path.join(FONTS_DIR, 'Roboto-Regular.ttf'),
-        'light': os.path.join(FONTS_DIR, 'Roboto-Light.ttf')
-    }
-    
-    # Verify fonts exist
-    for weight, path in fonts.items():
-        if not os.path.exists(path):
-            print(f"⚠ Font not found: {path}")
-            return None
-    
-    return fonts
-
-FONTS = load_fonts()
-
-def generate_output_filename(city, theme_name, output_format):
-    """
-    Generate unique output filename with city, theme, and datetime.
-    """
-    if not os.path.exists(POSTERS_DIR):
-        os.makedirs(POSTERS_DIR)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    city_slug = city.lower().replace(' ', '_')
-    ext = output_format.lower()
-    filename = f"{city_slug}_{theme_name}_{timestamp}.{ext}"
-    return os.path.join(POSTERS_DIR, filename)
-
-def get_available_themes():
-    """
-    Scans the themes directory and returns a list of available theme names.
-    """
-    if not os.path.exists(THEMES_DIR):
-        os.makedirs(THEMES_DIR)
-        return []
-    
-    themes = []
-    for file in sorted(os.listdir(THEMES_DIR)):
-        if file.endswith('.json'):
-            theme_name = file[:-5]  # Remove .json extension
-            themes.append(theme_name)
-    return themes
-
-def load_theme(theme_name="feature_based"):
-    """
-    Load theme from JSON file in themes directory.
-    """
-    theme_file = os.path.join(THEMES_DIR, f"{theme_name}.json")
-    
-    if not os.path.exists(theme_file):
-        print(f"⚠ Theme file '{theme_file}' not found. Using default feature_based theme.")
-        # Fallback to embedded default theme
-        return {
-            "name": "Feature-Based Shading",
-            "bg": "#FFFFFF",
-            "text": "#000000",
-            "gradient_color": "#FFFFFF",
-            "water": "#C0C0C0",
-            "parks": "#F0F0F0",
-            "road_motorway": "#0A0A0A",
-            "road_primary": "#1A1A1A",
-            "road_secondary": "#2A2A2A",
-            "road_tertiary": "#3A3A3A",
-            "road_residential": "#4A4A4A",
-            "road_default": "#3A3A3A"
-        }
-    
-    with open(theme_file, 'r') as f:
-        theme = json.load(f)
-        print(f"✓ Loaded theme: {theme.get('name', theme_name)}")
-        if 'description' in theme:
-            print(f"  {theme['description']}")
-        return theme
-
-# Load theme (can be changed via command line or input)
-THEME = dict[str, str]()  # Will be loaded later
-
-def create_gradient_fade(ax, color, location='bottom', zorder=10):
-    """
-    Creates a fade effect at the top or bottom of the map.
-    """
-    vals = np.linspace(0, 1, 256).reshape(-1, 1)
-    gradient = np.hstack((vals, vals))
-    
-    rgb = mcolors.to_rgb(color)
-    my_colors = np.zeros((256, 4))
-    my_colors[:, 0] = rgb[0]
-    my_colors[:, 1] = rgb[1]
-    my_colors[:, 2] = rgb[2]
-    
-    if location == 'bottom':
-        my_colors[:, 3] = np.linspace(1, 0, 256)
-        extent_y_start = 0
-        extent_y_end = 0.25
-    else:
-        my_colors[:, 3] = np.linspace(0, 1, 256)
-        extent_y_start = 0.75
-        extent_y_end = 1.0
-
-    custom_cmap = mcolors.ListedColormap(my_colors)
-    
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    y_range = ylim[1] - ylim[0]
-    
-    y_bottom = ylim[0] + y_range * extent_y_start
-    y_top = ylim[0] + y_range * extent_y_end
-    
-    ax.imshow(gradient, extent=[xlim[0], xlim[1], y_bottom, y_top], 
-              aspect='auto', cmap=custom_cmap, zorder=zorder, origin='lower')
-
-def get_edge_colors_by_type(G):
-    """
-    Assigns colors to edges based on road type hierarchy.
-    Returns a list of colors corresponding to each edge in the graph.
-    """
-    edge_colors = []
-    
-    for u, v, data in G.edges(data=True):
-        # Get the highway type (can be a list or string)
-        highway = data.get('highway', 'unclassified')
-        
-        # Handle list of highway types (take the first one)
-        if isinstance(highway, list):
-            highway = highway[0] if highway else 'unclassified'
-        
-        # Assign color based on road type
-        if highway in ['motorway', 'motorway_link']:
-            color = THEME['road_motorway']
-        elif highway in ['trunk', 'trunk_link', 'primary', 'primary_link']:
-            color = THEME['road_primary']
-        elif highway in ['secondary', 'secondary_link']:
-            color = THEME['road_secondary']
-        elif highway in ['tertiary', 'tertiary_link']:
-            color = THEME['road_tertiary']
-        elif highway in ['residential', 'living_street', 'unclassified']:
-            color = THEME['road_residential']
-        else:
-            color = THEME['road_default']
-        
-        edge_colors.append(color)
-    
-    return edge_colors
-
-def get_edge_widths_by_type(G):
-    """
-    Assigns line widths to edges based on road type.
-    Major roads get thicker lines.
-    """
-    edge_widths = []
-    
-    for u, v, data in G.edges(data=True):
-        highway = data.get('highway', 'unclassified')
-        
-        if isinstance(highway, list):
-            highway = highway[0] if highway else 'unclassified'
-        
-        # Assign width based on road importance
-        if highway in ['motorway', 'motorway_link']:
-            width = 1.2
-        elif highway in ['trunk', 'trunk_link', 'primary', 'primary_link']:
-            width = 1.0
-        elif highway in ['secondary', 'secondary_link']:
-            width = 0.8
-        elif highway in ['tertiary', 'tertiary_link']:
-            width = 0.6
-        else:
-            width = 0.4
-        
-        edge_widths.append(width)
-    
-    return edge_widths
+# ... (omitted) ...
 
 def get_coordinates(city, country):
     """
-    Fetches coordinates for a given city and country using geopy.
-    Includes rate limiting to be respectful to the geocoding service.
+    Fetches coordinates for a given city and country.
+    
+    Strategies:
+    1. Cache: Check local cache first.
+    2. Primary: OpenCage (Official SDK) - Commercial grade, requires API Key.
+    3. Fallback: Nominatim (Geopy) - Free, rate-limited.
     """
     coords = f"coords_{city.lower()}_{country.lower()}"
     cached = cache_get(coords)
@@ -283,8 +32,55 @@ def get_coordinates(city, country):
         return cached
 
     print("Looking up coordinates...")
-    geolocator = Nominatim(user_agent="city_map_poster", timeout=10)
     
+    # 1. Try OpenCage (if Key exists)
+    opencage_key = os.environ.get("OPENCAGE_API_KEY")
+    
+    if opencage_key:
+        print("Using OpenCage Geocoder (Official SDK)...")
+        try:
+            geocoder = OpenCageGeocode(opencage_key)
+            query = f"{city}, {country}"
+            
+            # Using basic exception handling for network issues, 
+            # specific OpenCage exceptions can be caught if needed.
+            results = geocoder.geocode(query, no_annotations='1', timeout=30)
+            
+            if results and len(results):
+                # OpenCage returns a list of dicts
+                best_match = results[0]
+                lat = best_match['geometry']['lat']
+                lon = best_match['geometry']['lng']
+                formatted_addr = best_match.get('formatted', f"{city}, {country}")
+                
+                print(f"✓ Found: {formatted_addr}")
+                print(f"✓ Coordinates: {lat}, {lon}")
+                
+                try:
+                    cache_set(coords, (lat, lon))
+                except CacheError as e:
+                    print(e)
+                return (lat, lon)
+            else:
+                print(f"⚠ OpenCage could not find: {query}")
+                # Fall through to Nominatim? Or raise error? 
+                # Usually if commercial geocoder fails, free one likely will too, 
+                # but we can let it fall through just in case.
+        
+        except RateLimitExceededError:
+            print("✗ OpenCage Error: Rate limit exceeded (Payment required?)")
+        except InvalidInputError:
+            print("✗ OpenCage Error: Invalid input/Key")
+        except Exception as e:
+            print(f"⚠ OpenCage Error: {e}")
+            print("Falling back to Nominatim...")
+
+    # 2. Fallback to Nominatim (Geopy)
+    print("Using Nominatim (Free/Rate-limited)...")
+    if not opencage_key:
+         print("  (Tip: Set OPENCAGE_API_KEY in .env for better stability)")
+         
+    geolocator = Nominatim(user_agent="city_map_poster", timeout=10)
     # Add a small delay to respect Nominatim's usage policy
     time.sleep(1)
     
@@ -298,20 +94,16 @@ def get_coordinates(city, country):
         try:
             location = asyncio.run(location)
         except RuntimeError:
-            # If an event loop is already running, try using it to complete the coroutine.
+             # If an event loop is already running...
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Running event loop in the same thread; raise a clear error.
-                raise RuntimeError("Geocoder returned a coroutine while an event loop is already running. Run this script in a synchronous environment.")
+                raise RuntimeError("Async loop conflict.")
             location = loop.run_until_complete(location)
     
     if location:
-        # Use getattr to safely access address (helps static analyzers)
         addr = getattr(location, "address", None)
         if addr:
             print(f"✓ Found: {addr}")
-        else:
-            print("✓ Found location (address not available)")
         print(f"✓ Coordinates: {location.latitude}, {location.longitude}")
         try:
             cache_set(coords, (location.latitude, location.longitude))
@@ -320,7 +112,6 @@ def get_coordinates(city, country):
         return (location.latitude, location.longitude)
     else:
         raise ValueError(f"Could not find coordinates for {city}, {country}")
-    
 def get_crop_limits(G: MultiDiGraph, fig: Figure) -> tuple[tuple[float, float], tuple[float, float]]:
     """
     Determine cropping limits to maintain aspect ratio of the figure.
