@@ -1,0 +1,15 @@
+{
+    "name": "Chinese_ink",
+    "description": "Inspired by 'Little Tadpoles Looking for Mama' and 'The Deer King'. Rice paper texture with mineral stone colors.",
+    "bg": "#F4EFE2",
+    "text": "#8B2E2E",
+    "gradient_color": "#F4EFE2",
+    "water": "#94B0B2",
+    "parks": "#C1CBD7",
+    "road_motorway": "#2F3136",
+    "road_primary": "#4A4E55",
+    "road_secondary": "#686D76",
+    "road_tertiary": "#8A8F99",
+    "road_residential": "#B5BCC6",
+    "road_default": "#686D76"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "Night City Protocol",
+  "description": "A high-contrast, neon-infused palette evoking a dystopian futuristic metropolis. Deep obsidian backgrounds highlight the electric cyan and magenta road networks.",
+  "bg": "#050505",
+  "text": "#d1f7ff",
+  "gradient_color": "#050505",
+  "water": "#001824",
+  "parks": "#0f2115",
+  "road_motorway": "#ff00ff",
+  "road_primary": "#00ffff",
+  "road_secondary": "#bd00ff",
+  "road_tertiary": "#4d2db5",
+  "road_residential": "#1c2533",
+  "road_default": "#4d2db5"
+}
